@@ -6,11 +6,9 @@ import requests
 import uuid
 
 # Constants
-POSTGRES_CONN_ID = "hcvt_db_conn"
+POSTGRES_CONN_ID = "bike_db_conn"
 API_URL = "https://archive-api.open-meteo.com/v1/archive"
-LOCATION = {
-    "New York City": {"lat": 40.7128, "lon": -74.0060}
-}
+LOCATION = {"New York City": {"lat": 40.7128, "lon": -74.0060}}
 PARAMS = {
     "hourly": [
         "temperature_2m",
@@ -18,6 +16,7 @@ PARAMS = {
         "windspeed_10m",
         "precipitation",
         "relative_humidity_2m",
+        "weathercode",
     ],
     "timezone": "America/New_York",
     "start_date": "2023-01-01",
@@ -55,7 +54,8 @@ def create_tables():
                     apparent_temperature FLOAT,
                     windspeed FLOAT,
                     precipitation FLOAT,
-                    humidity FLOAT
+                    humidity FLOAT,
+                    weather_type INT
                 )
             """
             )
@@ -66,6 +66,28 @@ def fetch_and_store_weather():
     request_time = datetime.now(timezone.utc)
     all_metadata = []
     all_data = []
+
+    # grouping for mapping weathercode -> weather_type (1..4)
+    weather_groups = {
+        1: [0, 1, 2, 3],  # Clear / Cloudy
+        2: [45, 48],  # Fog / Mist
+        3: [
+            51,
+            53,
+            56,
+            61,
+            63,
+            66,
+            71,
+            73,
+            77,
+            80,
+            81,
+            85,
+            95,
+        ],  # Light rain/snow/thunder
+        4: [55, 57, 65, 67, 75, 82, 86, 96, 99],  # Heavy / complex precipitation
+    }
 
     for city, coords in LOCATION.items():
         request_id = str(uuid.uuid4())
@@ -82,7 +104,9 @@ def fetch_and_store_weather():
         print(f"Fetching historical data for {city}")
         response = requests.get(API_URL, params=params)
         if response.status_code != 200:
-            raise Exception(f"Failed to fetch data: {response.status_code} - {response.text}")
+            raise Exception(
+                f"Failed to fetch data: {response.status_code} - {response.text}"
+            )
 
         data = response.json()
         timestamps = data["hourly"]["time"]
@@ -91,6 +115,7 @@ def fetch_and_store_weather():
         windspeeds = data["hourly"]["windspeed_10m"]
         precipitations = data["hourly"]["precipitation"]
         humidity = data["hourly"]["relative_humidity_2m"]
+        weathercodes = data["hourly"].get("weathercode", [])
 
         all_metadata.append(
             (request_id, request_time, city, coords["lat"], coords["lon"])
@@ -98,7 +123,30 @@ def fetch_and_store_weather():
 
         for i in range(len(timestamps)):
             timestamp = datetime.fromisoformat(timestamps[i])
-            row_id = f"{timestamp.year}-{timestamp.month}-{timestamp.day}-{timestamp.hour}"
+            row_id = (
+                f"{timestamp.year}-{timestamp.month}-{timestamp.day}-{timestamp.hour}"
+            )
+
+            # map weathercode to weather_type (1..4). if unknown, log and store NULL
+            weather_type = None
+            try:
+                code = weathercodes[i]
+            except (IndexError, TypeError):
+                code = None
+
+            if code is not None:
+                mapped = None
+                for grp, codes in weather_groups.items():
+                    if code in codes:
+                        mapped = grp
+                        break
+                if mapped is None:
+                    # log unknown code
+                    print(
+                        f"Unknown weathercode {code} at {timestamp.isoformat()} for {city}"
+                    )
+                weather_type = mapped
+
             all_data.append(
                 (
                     row_id,
@@ -109,6 +157,7 @@ def fetch_and_store_weather():
                     windspeeds[i],
                     precipitations[i],
                     humidity[i],
+                    weather_type,
                 )
             )
 
@@ -124,8 +173,8 @@ def fetch_and_store_weather():
             )
             cur.executemany(
                 """
-                INSERT INTO weather_data (id, request_id, timestamp, temperature, apparent_temperature, windspeed, precipitation, humidity)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO weather_data (id, request_id, timestamp, temperature, apparent_temperature, windspeed, precipitation, humidity, weather_type)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (id) DO UPDATE SET
                     request_id = EXCLUDED.request_id,
                     timestamp = EXCLUDED.timestamp,
@@ -133,7 +182,8 @@ def fetch_and_store_weather():
                     apparent_temperature = EXCLUDED.apparent_temperature,
                     windspeed = EXCLUDED.windspeed,
                     precipitation = EXCLUDED.precipitation,
-                    humidity = EXCLUDED.humidity
+                    humidity = EXCLUDED.humidity,
+                    weather_type = EXCLUDED.weather_type
             """,
                 all_data,
             )

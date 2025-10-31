@@ -1,0 +1,71 @@
+version: "3.8"
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # internal DB for Airflow metadata inside the container
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+
+  airflow-init:
+    image: apache/airflow:2.7.1
+    env_file: .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      # connection to your external bike_db (Postgres running on host)
+      AIRFLOW_CONN_BIKE_DB_CONN: postgresql+psycopg2://${EXTERNAL_PG_USER}:${EXTERNAL_PG_PASSWORD}@${EXTERNAL_PG_HOST}:${EXTERNAL_PG_PORT}/${EXTERNAL_PG_DB}
+    depends_on:
+      - postgres
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - citibike_data:/opt/airflow/citibike_data
+    entrypoint: >
+      bash -c "airflow db init &&
+               airflow users create --username airflow --password airflow --firstname Airflow --lastname User --role Admin --email admin@example.com"
+  webserver:
+    image: apache/airflow:2.7.1
+    env_file: .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      AIRFLOW_CONN_BIKE_DB_CONN: postgresql+psycopg2://${EXTERNAL_PG_USER}:${EXTERNAL_PG_PASSWORD}@${EXTERNAL_PG_HOST}:${EXTERNAL_PG_PORT}/${EXTERNAL_PG_DB}
+    depends_on:
+      - postgres
+      - airflow-init
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - citibike_data:/opt/airflow/citibike_data
+    ports:
+      - "8080:8080"
+    command: webserver
+
+  scheduler:
+    image: apache/airflow:2.7.1
+    env_file: .env
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres/${POSTGRES_DB}
+      AIRFLOW_CONN_BIKE_DB_CONN: postgresql+psycopg2://${EXTERNAL_PG_USER}:${EXTERNAL_PG_PASSWORD}@${EXTERNAL_PG_HOST}:${EXTERNAL_PG_PORT}/${EXTERNAL_PG_DB}
+    depends_on:
+      - postgres
+      - airflow-init
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./logs:/opt/airflow/logs
+      - ./plugins:/opt/airflow/plugins
+      - citibike_data:/opt/airflow/citibike_data
+    command: scheduler
+
+volumes:
+  postgres-db:
+  logs:
+  plugins:
+  citibike_data:

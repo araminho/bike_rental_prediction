@@ -1,0 +1,6 @@
+__pycache__
+*.pyc
+.docker
+.git
+.gitignore
+citibike_data/
